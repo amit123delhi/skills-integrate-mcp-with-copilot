@@ -10,6 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import RedirectResponse
 import os
 from pathlib import Path
+import json
 
 app = FastAPI(title="Mergington High School API",
               description="API for viewing and signing up for extracurricular activities")
@@ -18,6 +19,12 @@ app = FastAPI(title="Mergington High School API",
 current_dir = Path(__file__).parent
 app.mount("/static", StaticFiles(directory=os.path.join(Path(__file__).parent,
           "static")), name="static")
+
+# Load teacher credentials from JSON file
+def load_teachers():
+    teacher_file = Path(__file__).parent / "teachers.json"
+    with open(teacher_file, "r") as f:
+        return json.load(f)["teachers"]
 
 # In-memory activity database
 activities = {
@@ -111,8 +118,15 @@ def signup_for_activity(activity_name: str, email: str):
 
 
 @app.delete("/activities/{activity_name}/unregister")
-def unregister_from_activity(activity_name: str, email: str):
-    """Unregister a student from an activity"""
+def unregister_from_activity(activity_name: str, email: str, is_admin: bool = False):
+    """Unregister a student from an activity (admin only)"""
+    # Only admins can unregister
+    if not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only teachers/admins can unregister students"
+        )
+
     # Validate activity exists
     if activity_name not in activities:
         raise HTTPException(status_code=404, detail="Activity not found")
@@ -130,3 +144,55 @@ def unregister_from_activity(activity_name: str, email: str):
     # Remove student
     activity["participants"].remove(email)
     return {"message": f"Unregistered {email} from {activity_name}"}
+
+
+@app.post("/login")
+def login(username: str, password: str):
+    """Authenticate a teacher"""
+    teachers = load_teachers()
+    
+    for teacher in teachers:
+        if teacher["username"] == username and teacher["password"] == password:
+            return {"success": True, "message": f"Welcome, {username}!"}
+    
+    raise HTTPException(
+        status_code=401,
+        detail="Invalid credentials"
+    )
+
+
+@app.post("/activities/{activity_name}/signup")
+def admin_signup(activity_name: str, email: str, is_admin: bool = False):
+    """Sign up a student for an activity (admin only signup)"""
+    # Only admins can use this endpoint to register others
+    if is_admin:
+        # Validate activity exists
+        if activity_name not in activities:
+            raise HTTPException(status_code=404, detail="Activity not found")
+
+        # Get the specific activity
+        activity = activities[activity_name]
+
+        # Validate activity is not full
+        if len(activity["participants"]) >= activity["max_participants"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Activity is full"
+            )
+
+        # Validate student is not already signed up
+        if email in activity["participants"]:
+            raise HTTPException(
+                status_code=400,
+                detail="Student is already signed up"
+            )
+
+        # Add student
+        activity["participants"].append(email)
+        return {"message": f"Signed up {email} for {activity_name}"}
+    
+    # Non-admin signup (student signup) - not allowed anymore
+    raise HTTPException(
+        status_code=403,
+        detail="Students cannot sign up directly. Please ask your teacher."
+    )
